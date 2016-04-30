@@ -44,10 +44,14 @@ func main() {
 
 	var taskCmd *exec.Cmd
 
+	if task == "" {
+		log.Fatalln("Please specify a task to run. For more info see usage.")
+	}
+
 	startTask := func() *exec.Cmd {
 		magenta.Println("Starting task...")
 		taskCmd = exec.Command("bash", "-c", task)
-		// create a new process group for the task, helps cancel process tree
+		// set new process group for task; simplifies cancelling process tree
 		taskCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		taskCmd.Stdin = os.Stdin
 		taskCmd.Stdout = os.Stdout
