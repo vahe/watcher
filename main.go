@@ -48,6 +48,14 @@ func main() {
 		log.Fatalln("Please specify a task to run. For more info see usage.")
 	}
 
+	if watchDir == "" {
+		log.Fatalln("Please specify a directory to watch. For more info see usage.")
+	}
+
+	if _, err := os.Stat(watchDir); err != nil {
+		log.Fatalln("Error:", err)
+	}
+
 	startTask := func() *exec.Cmd {
 		magenta.Println("Starting task...")
 		taskCmd = exec.Command("bash", "-c", task)
@@ -65,7 +73,7 @@ func main() {
 	}
 
 	stopTask := func() {
-		// if we need to wait for task to exit, just wait
+		// if waitForExit flag is set, just wait till task completes
 		if waitForExit {
 			magenta.Println("Waiting for task to complete.")
 			err := taskCmd.Wait()
