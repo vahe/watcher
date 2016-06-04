@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,20 +18,20 @@ import (
 var (
 	watchDir    string
 	recursive   bool
-	ignore      string
-	task        string
+	exclude     string
+	cmdName     string
 	waitForExit bool
-	initTask    bool
+	initCmd     bool
 )
 
 func init() {
-	flag.StringVar(&watchDir, "dir", "./", "directory to watch")
+	flag.StringVar(&watchDir, "watch", "./", "directory to watch")
 	flag.BoolVar(&recursive, "r", true, "watch directory recursively")
-	flag.StringVar(&ignore, "ignore", ".git", "directory name to exclude")
+	flag.StringVar(&exclude, "exclude", ".git", "directory name(s) to exclude (comma separated)")
 
-	flag.StringVar(&task, "task", "", "task to run when an event occurs")
-	flag.BoolVar(&waitForExit, "wait", false, "wait for task to finish running")
-	flag.BoolVar(&initTask, "init", true, "starts task immidiately")
+	flag.StringVar(&cmdName, "cmd", "", "command to run when an event occurs")
+	flag.BoolVar(&waitForExit, "wait", false, "wait for command to finish running")
+	flag.BoolVar(&initCmd, "init", true, "execute command immidiately (does not wait for first change event)")
 }
 
 var (
@@ -42,10 +43,10 @@ var (
 func main() {
 	flag.Parse()
 
-	var taskCmd *exec.Cmd
+	var cmd *exec.Cmd
 
-	if task == "" {
-		log.Fatalln("Please specify a task to run. For more info see usage.")
+	if cmdName == "" {
+		log.Fatalln("Please specify a command to run. For more info see usage.")
 	}
 
 	if watchDir == "" {
@@ -56,44 +57,46 @@ func main() {
 		log.Fatalln("Error:", err)
 	}
 
-	startTask := func() *exec.Cmd {
-		magenta.Println("Starting task...")
-		taskCmd = exec.Command("bash", "-c", task)
-		// set new process group for task; simplifies cancelling process tree
-		taskCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		taskCmd.Stdin = os.Stdin
-		taskCmd.Stdout = os.Stdout
-		taskCmd.Stderr = os.Stdout
+	excludedDirs := strings.Split(exclude, ",")
 
-		err := taskCmd.Start()
+	startCmd := func() *exec.Cmd {
+		magenta.Println("Starting...")
+		cmd = exec.Command("bash", "-c", cmdName)
+		// set new process group for process; simplifies cancelling process tree
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stdout
+
+		err := cmd.Start()
 		if err != nil {
 			log.Fatalln(err)
 		}
-		return taskCmd
+		return cmd
 	}
 
-	stopTask := func() {
-		// if waitForExit flag is set, just wait till task completes
+	stopCmd := func() {
+		// if waitForExit flag is set, just wait till cmd completes
 		if waitForExit {
 			magenta.Println("Waiting for task to complete.")
-			err := taskCmd.Wait()
+			err := cmd.Wait()
 			if err != nil {
 				red.Println("Wait err:", err)
 			}
 		} else {
 			magenta.Println("Stopping task...")
-			pgid, err := syscall.Getpgid(taskCmd.Process.Pid)
+			pgid, err := syscall.Getpgid(cmd.Process.Pid)
 			if err == nil {
 				syscall.Kill(-pgid, syscall.SIGTERM)
 			}
 			done := make(chan error, 1)
 			go func() {
-				done <- taskCmd.Wait()
+				done <- cmd.Wait()
 			}()
 			select {
 			case <-time.After(2 * time.Second):
 				// sigint failed, so KILL it
-				if err := taskCmd.Process.Kill(); err != nil {
+				if err := cmd.Process.Kill(); err != nil {
 					log.Fatalln("Failed to KILL task:", err)
 				}
 				magenta.Println("KILLed process")
@@ -107,9 +110,9 @@ func main() {
 		}
 	}
 
-	// if initTask flag was set (set by default), start task before watchers
-	if initTask {
-		taskCmd = startTask()
+	// if initCmd flag is set (set by default), start command before watchers
+	if initCmd {
+		cmd = startCmd()
 	}
 
 	// Since we're creating a new process group for the task, we need a way of
@@ -118,29 +121,31 @@ func main() {
 	signal.Notify(sigchan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		for _ = range sigchan {
-			stopTask()
+			stopCmd()
 			os.Exit(0)
 		}
 	}()
 
 	notifyChan := make(chan struct{})
-	go Watch(watchDir, notifyChan, recursive, ignore)
+	go Watch(watchDir, notifyChan, recursive, excludedDirs)
 
 	for {
 		_ = <-notifyChan
-		stopTask()
-		taskCmd = startTask()
+		stopCmd()
+		cmd = startCmd()
 	}
 }
 
-func watch(root string, watcher *fsnotify.Watcher, rec bool, ignore string) error {
+func watch(root string, watcher *fsnotify.Watcher, rec bool, excludes []string) error {
 	if !rec {
 		return watcher.Add(root)
 	}
 	err := filepath.Walk(root, func(path string, i os.FileInfo, err error) error {
 		if i.IsDir() {
-			if i.Name() == ignore {
-				return filepath.SkipDir
+			for _, excl := range excludes {
+				if i.Name() == excl {
+					return filepath.SkipDir
+				}
 			}
 			watcher.Add(path)
 		}
@@ -150,7 +155,7 @@ func watch(root string, watcher *fsnotify.Watcher, rec bool, ignore string) erro
 }
 
 // Watch watches given root diretory and sends a notification on a WRITE event
-func Watch(root string, notify chan struct{}, recursive bool, ignore string) {
+func Watch(root string, notify chan struct{}, recursive bool, excludes []string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		red.Println("Watcher:", err)
@@ -158,7 +163,7 @@ func Watch(root string, notify chan struct{}, recursive bool, ignore string) {
 	}
 	defer watcher.Close()
 
-	err = watch(root, watcher, recursive, ignore)
+	err = watch(root, watcher, recursive, excludes)
 	if err != nil {
 		red.Println("Watcher:", err)
 		return
