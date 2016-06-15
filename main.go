@@ -76,6 +76,9 @@ func main() {
 	}
 
 	stopCmd := func() {
+		if cmd == nil {
+			return
+		}
 		// if waitForExit flag is set, just wait till cmd completes
 		if waitForExit {
 			magenta.Println("Waiting for task to complete.")
