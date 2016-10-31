@@ -61,7 +61,7 @@ func main() {
 
 	startCmd := func() *exec.Cmd {
 		magenta.Println("Starting...")
-		cmd = exec.Command("bash", "-c", cmdName)
+		cmd = exec.Command("sh", "-c", cmdName)
 		// set new process group for process; simplifies cancelling process tree
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Stdin = os.Stdin
